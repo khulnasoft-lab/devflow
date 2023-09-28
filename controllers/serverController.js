@@ -1,7 +1,6 @@
 var ServerEnv = require('../models/serverEnvironment'),
     notifier  = require('../services/notifier'),
     mailer = require('../services/mailer'),
-    serverMessages  = require('../services/messages/servers'),
     request = require('request');
 
 function saveServerEnv(serverEnv) {
@@ -46,16 +45,8 @@ function findServerByName(serverName, servers){
 module.exports = {
 
     all: function (req, res) {
-        if (req.query.token) {
-            try {
-                var decodedUser = jwt.verify(req.query.token, req.app.get('superSecret'));
-            } catch(ex) {
-                res.send(500, { error: "Bad token" });
-                return;
-            }
-        }
 
-        if (!req.user && !decodedUser) {
+        if (!req.user) {
             res.json([]);
             return;
         }
@@ -68,7 +59,7 @@ module.exports = {
 
                 if (!err) {
 
-                    if (!req.user && !decodedUser) { // fix for strange server error
+                    if (!req.user) { // fix for strange server error
                         serverEnvs = [];
                     } else if (req.query.free) {
 
@@ -217,7 +208,6 @@ module.exports = {
                                 'The server has been marked as taken by you automatically :)');
 
                     notifier.sendMessage('server', server.user.name, getNotifierMsg(server, 'took by queue'), 'red');
-                    notifier.sendSlackPersonalMessage(server.user.email, 'system', serverMessages.automaticallyAssigned(server.user, server), 'orange');
                 }
 
                 if (callback) { callback({env: env, server: server}); }
@@ -232,7 +222,6 @@ module.exports = {
     },
 
     queue: function (data, callback) {
-
         ServerEnv.findOne({name: data.server.environment}, function(err, env) {
             try {
 
@@ -242,8 +231,7 @@ module.exports = {
                 saveServerEnv(env);
 
                 notifier.sendMessage('server', data.user.name, getNotifierMsg(data.server, 'queued in'), 'yellow');
-                notifier.sendSlackPersonalMessage(data.server.user.email, 'system', serverMessages.spareAServer(data.user, data.server), 'orange');
-                
+
                 if (callback) { callback(env); }
 
             } catch (exp) {
@@ -288,11 +276,6 @@ module.exports = {
 
                 notifier.sendMessage('server', data.user.name, getNotifierMsg(data.env, 'queued in ENV: '), 'red');
 
-                // notifying personally for each user who has a plike
-                env.servers.map(function(server) {
-                    notifier.sendSlackPersonalMessage(server.user.email, 'system', serverMessages.spareAServer(data.user, server), 'orange');
-                });
-
                 if (callback) { callback(env); }
 
             } catch (exp) {
@@ -314,8 +297,7 @@ module.exports = {
                 saveServerEnv(env);
 
                 notifier.sendMessage('server', data.user.name, getNotifierMsg(data.env, 'unqueued in ENV: '), 'green');
-                notifier.sendSlackPersonalMessage(server.user.email, 'system', serverMessages.automaticallyAssigned(server.user, server), 'orange');
-                
+
                 if (callback) { callback(env); }
 
             } catch (exp) {
@@ -346,10 +328,7 @@ module.exports = {
         ServerEnv.findOne({name: data.environment}, function(err, env) {
             try {
 
-                if (err) {
-                    if (callback) { callback(null, err); }
-                    return;
-                }
+                if (err) { throw err; }
 
                 var options = {
                     uri: config.pod.url,
@@ -359,10 +338,7 @@ module.exports = {
 
                 request(options, function (error, response, body) {
 
-                    if (error) {
-                        if (callback) { callback(null, error); }
-                        return;
-                    }
+                    if (error) { throw error; }
 
                     var srv = env.create(body.instance_id, data.user, data.release_date, body.deploy_url, body.server_url, data.custom_gemset);
                     saveServerEnv(env);
@@ -383,19 +359,10 @@ module.exports = {
         try {
 
             ServerEnv.findOne({name: data.environment}, function(err, env) {
-
-                if (err) {
-                    if (callback) { callback(null, err); }
-                    return;
-                }
+                if (err) { throw err; }
 
                 request.del(config.pod.url + '/' + data.name, function (error, response, body) {
-
-                    if (error) {
-                        if (callback) { callback(null, error); }
-                        return;
-                    }
-
+                    if (error) { throw error; }
                 });
 
                 var srv = env.kill(data.name);
@@ -431,15 +398,7 @@ module.exports = {
         },
 
         take: function (req, res) {
-            if (req.body.token) {
-                try {
-                    token = jwt.verify(req.body.token, req.app.get('superSecret'));
-                    req.body.user = token._doc
-                } catch(ex) {
-                    res.send(500, { error: "bad token" });
-                    return;
-                }
-            }
+
             module.exports.take(req.body, function(env, err) {
 
                 if (err) {
@@ -447,18 +406,13 @@ module.exports = {
                     return;
                 }
 
-                if (env == null) {
+                if (!env) {
                     res.send(500, { error: "Environment not found!" });
                     return;
                 }
 
                 // Extract and return just the requested server!
                 var srv = findServerByName(req.body.name, env.servers)
-                if (srv == null) {
-                    res.send(404, { error: "Server not found!" });
-                    return;
-                }
-
                 res.json(srv);
             });
         },
@@ -479,10 +433,6 @@ module.exports = {
 
                 // Extract and return just the requested server!
                 var srv = findServerByName(req.body.name, env.servers)
-                if (srv == null) {
-                    res.send(404, { error: "Server not found!" });
-                    return;
-                }
                 res.json(srv);
             });
         },
@@ -504,7 +454,7 @@ module.exports = {
 
         queue: function(req, res) {
 
-            module.exports.queue({ server: req.body, user: req.body.user }, function(env, err) {
+            module.exports.queue(req.body, function(env, err) {
 
                 if (err) {
                     res.send(500, {error: err.toString()});
@@ -518,10 +468,6 @@ module.exports = {
 
                 // Extract and return just the requested server!
                 var srv = findServerByName(req.body.name, env.servers)
-                if (srv == null) {
-                    res.send(404, { error: "Server not found!" });
-                    return;
-                }
                 res.json(srv);
             });
 
@@ -529,7 +475,7 @@ module.exports = {
 
         unqueue: function(req, res) {
 
-            module.exports.unqueue({ server: req.body, user: req.body.user }, function(env, err) {
+            module.exports.unqueue(req.body, function(env) {
 
                 if (err) {
                     res.send(500, {error: err.toString()});
